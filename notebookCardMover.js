@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         NotebookLM Chat Card Mover - Fixed Resize Issue
+// @name         NotebookLM Chat Card Mover - Floating Controls
 // @namespace    http://tampermonkey.net/
-// @version      v1.1.0
-// @description
+// @version      v2.0.0
+// @description  Navigate between chat cards with fixed floating buttons
 // @author       You
 // @match        https://notebooklm.google.com/notebook/*
 // @grant        none
@@ -12,7 +12,10 @@
 (function() {
     'use strict';
 
-    // 實用工具函數：Debounce (去抖動)
+    let currentCard = null;
+    let floatingControls = null;
+
+    // 實用工具函數：Debounce
     function debounce(func, delay) {
         let timeout;
         return function(...args) {
@@ -21,137 +24,278 @@
             timeout = setTimeout(() => func.apply(context, args), delay);
         };
     }
-    
-    // --- 核心移動邏輯 (不變) ---
 
-    function moveCardUp(element) {
-        const parentContainer = element.closest('div.chat-message-pair');
-        if (!parentContainer) return;
-        const previousContainer = parentContainer.previousElementSibling;
-        if (previousContainer) {
-            parentContainer.parentNode.insertBefore(parentContainer, previousContainer);
-        }
-    }
-
-    function moveCardDown(element) {
-        const parentContainer = element.closest('div.chat-message-pair');
-        if (!parentContainer) return;
-        const nextContainer = parentContainer.nextElementSibling;
-        if (nextContainer) {
-            parentContainer.parentNode.insertBefore(parentContainer, nextContainer.nextElementSibling);
-        }
-    }
-
-    /**
-     * 在 mat-card 旁邊插入上/下移動按鈕。
-     * @param {HTMLElement} card - mat-card 元素
-     */
-    function insertMoveButtons(card) {
-        const parent = card.parentNode;
-        if (!parent) return;
-
-        // 改進的檢查：不只檢查標記，還要確認按鈕容器真的存在
-        const existingButtons = parent.querySelector('.card-mover-buttons');
-        if (existingButtons) {
-            return; // 按鈕已存在，不需重複添加
-        }
-
-        const buttonContainer = document.createElement('div');
-        buttonContainer.className = 'card-mover-buttons';
-        buttonContainer.style.cssText = `
-            position: absolute;
-            top: 0px;
-            right: 0px;
-            z-index: 1000;
-            display: flex;
-            flex-direction: column;
-            opacity: 0.2;
-            transition: opacity 0.2s;
-        `;
-        
-        // 確保 mat-card 的父元素是定位基準
-        parent.style.position = 'relative'; 
-        parent.addEventListener('mouseenter', () => buttonContainer.style.opacity = '1');
-        parent.addEventListener('mouseleave', () => buttonContainer.style.opacity = '0.2');
-
-        const upButton = document.createElement('button');
-        upButton.textContent = '⬆️';
-        upButton.title = '上移卡片';
-        upButton.style.cssText = 'background: #fff; border: 1px solid #ccc; cursor: pointer; padding: 2px 5px; margin-bottom: 2px;';
-        upButton.onclick = (e) => {
-            e.stopPropagation();
-            moveCardUp(card);
+    // 實用工具函數：Throttle (節流)
+    function throttle(func, delay) {
+        let lastCall = 0;
+        return function(...args) {
+            const now = Date.now();
+            if (now - lastCall >= delay) {
+                lastCall = now;
+                func.apply(this, args);
+            }
         };
-        
-        const downButton = document.createElement('button');
-        downButton.textContent = '⬇️';
-        downButton.title = '下移卡片';
-        downButton.style.cssText = 'background: #fff; border: 1px solid #ccc; cursor: pointer; padding: 2px 5px;';
-        downButton.onclick = (e) => {
-            e.stopPropagation();
-            moveCardDown(card);
-        };
-
-        buttonContainer.appendChild(upButton);
-        buttonContainer.appendChild(downButton);
-        parent.appendChild(buttonContainer);
     }
-    
-    // --- 核心掃描與綁定邏輯 ---
 
-    /**
-     * 掃描 chat-panel-content 內的所有卡片並添加按鈕。
-     */
-    function scanAndAttachButtons() {
+    // 檢查元素是否在視窗中可見
+    function isElementInViewport(el, threshold = 0.5) {
+        const rect = el.getBoundingClientRect();
+        const windowHeight = window.innerHeight || document.documentElement.clientHeight;
+        const windowWidth = window.innerWidth || document.documentElement.clientWidth;
+
+        const vertInView = rect.top <= windowHeight * (1 - threshold) && rect.bottom >= windowHeight * threshold;
+        const horInView = rect.left <= windowWidth && rect.right >= 0;
+
+        return vertInView && horInView;
+    }
+
+    // 找出當前最可見的卡片
+    function findMostVisibleCard() {
         const panel = document.querySelector('div.chat-panel-content');
-        if (!panel) {
-            return;
-        }
-        
-        // 抓取所有聊天訊息的容器
-        const messageContainers = panel.querySelectorAll('div.chat-message-pair');
+        if (!panel) return null;
 
-        // 遍歷容器，尋找 mat-card 並添加按鈕
+        const messageContainers = panel.querySelectorAll('div.chat-message-pair');
+        let mostVisibleCard = null;
+        let maxVisibility = 0;
+
         messageContainers.forEach(container => {
             const card = container.querySelector('chat-message > div > mat-card');
-            
-            if (card) {
-                insertMoveButtons(card);
+            if (!card) return;
+
+            const rect = card.getBoundingClientRect();
+            const windowHeight = window.innerHeight || document.documentElement.clientHeight;
+
+            // 計算可見度百分比
+            const visibleTop = Math.max(0, rect.top);
+            const visibleBottom = Math.min(windowHeight, rect.bottom);
+            const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+            const visibility = visibleHeight / rect.height;
+
+            if (visibility > maxVisibility && visibility > 0.3) {
+                maxVisibility = visibility;
+                mostVisibleCard = card;
             }
         });
+
+        return mostVisibleCard;
     }
 
-    // 將掃描函數去抖動化
-    const debouncedScan = debounce(scanAndAttachButtons, 100);
-    
-    // 新增：處理視窗大小改變
-    const debouncedResizeScan = debounce(scanAndAttachButtons, 300);
+    // 更新當前選中的卡片
+    function updateCurrentCard() {
+        const newCard = findMostVisibleCard();
 
-    // --- 啟動監聽 ---
+        if (newCard !== currentCard) {
+            // 移除舊卡片的高亮
+            if (currentCard) {
+                currentCard.style.outline = '';
+            }
 
-    // 使用 MutationObserver 專門等待 chat-panel-content 出現
-    const initObserver = new MutationObserver((mutationsList, observer) => {
+            currentCard = newCard;
+
+            // 添加新卡片的高亮
+            if (currentCard) {
+                currentCard.style.outline = '2px solid rgba(66, 133, 244, 0.5)';
+                updateFloatingControlsState();
+            }
+        }
+    }
+
+    // 更新懸浮按鈕的啟用/禁用狀態
+    function updateFloatingControlsState() {
+        if (!floatingControls || !currentCard) return;
+
+        const upBtn = floatingControls.querySelector('.move-up-btn');
+        const downBtn = floatingControls.querySelector('.move-down-btn');
+
+        const parentContainer = currentCard.closest('div.chat-message-pair');
+        if (!parentContainer) return;
+
+        // 檢查是否有上一個/下一個元素
+        const hasPrevious = !!parentContainer.previousElementSibling;
+        const hasNext = !!parentContainer.nextElementSibling;
+
+        upBtn.disabled = !hasPrevious;
+        upBtn.style.opacity = hasPrevious ? '1' : '0.3';
+        upBtn.style.cursor = hasPrevious ? 'pointer' : 'not-allowed';
+
+        downBtn.disabled = !hasNext;
+        downBtn.style.opacity = hasNext ? '1' : '0.3';
+        downBtn.style.cursor = hasNext ? 'pointer' : 'not-allowed';
+    }
+
+    // 滾動到上一張卡片
+    function moveCardUp() {
+        if (!currentCard) return;
+        const parentContainer = currentCard.closest('div.chat-message-pair');
+        if (!parentContainer) return;
+
+        const previousContainer = parentContainer.previousElementSibling;
+        if (previousContainer) {
+            const previousCard = previousContainer.querySelector('chat-message > div > mat-card');
+            if (previousCard) {
+                previousCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 等待滾動完成後更新當前卡片
+                setTimeout(() => {
+                    currentCard.style.outline = '';
+                    currentCard = previousCard;
+                    currentCard.style.outline = '2px solid rgba(66, 133, 244, 0.5)';
+                    updateFloatingControlsState();
+                }, 500);
+            }
+        }
+    }
+
+    function moveCardDown() {
+        if (!currentCard) return;
+        const parentContainer = currentCard.closest('div.chat-message-pair');
+        if (!parentContainer) return;
+
+        const nextContainer = parentContainer.nextElementSibling;
+        if (nextContainer) {
+            const nextCard = nextContainer.querySelector('chat-message > div > mat-card');
+            if (nextCard) {
+                nextCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                // 等待滾動完成後更新當前卡片
+                setTimeout(() => {
+                    currentCard.style.outline = '';
+                    currentCard = nextCard;
+                    currentCard.style.outline = '2px solid rgba(66, 133, 244, 0.5)';
+                    updateFloatingControlsState();
+                }, 500);
+            }
+        }
+    }
+
+    // 創建懸浮控制面板
+    function createFloatingControls() {
+        if (floatingControls) return;
+
+        const container = document.createElement('div');
+        container.className = 'card-mover-floating-controls';
+        container.style.cssText = `
+            position: fixed;
+            top: 0px;
+            right: 50%;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(10px);
+            padding: 12px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            transition: opacity 0.3s;
+        `;
+
+        const buttonStyle = `
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            cursor: pointer;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 20px;
+            transition: all 0.2s;
+            min-width: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        `;
+
+        const upButton = document.createElement('button');
+        upButton.className = 'move-up-btn';
+        upButton.id = 'myUpButton';
+        upButton.textContent = '⬆️';  // 改用 textContent 避免 TrustedHTML 錯誤
+        upButton.title = '跳到上一張卡片';
+        upButton.style.cssText = buttonStyle;
+        console.log('✅ Up button created:', upButton);
+        upButton.onmouseover = () => {
+            if (!upButton.disabled) {
+                upButton.style.background = 'rgba(255, 255, 255, 0.2)';
+                upButton.style.transform = 'scale(1.05)';
+            }
+        };
+        upButton.onmouseout = () => {
+            upButton.style.background = 'rgba(255, 255, 255, 0.1)';
+            upButton.style.transform = 'scale(1)';
+        };
+        upButton.onclick = moveCardUp;
+
+        const downButton = document.createElement('button');
+        downButton.className = 'move-down-btn';
+        downButton.id = 'myDownButton';
+        downButton.textContent = '⬇️';  // 改用 textContent 避免 TrustedHTML 錯誤
+        downButton.title = '跳到下一張卡片';
+        downButton.style.cssText = buttonStyle;
+        console.log('✅ Down button created:', downButton);
+        downButton.onmouseover = () => {
+            if (!downButton.disabled) {
+                downButton.style.background = 'rgba(255, 255, 255, 0.2)';
+                downButton.style.transform = 'scale(1.05)';
+            }
+        };
+        downButton.onmouseout = () => {
+            downButton.style.background = 'rgba(255, 255, 255, 0.1)';
+            downButton.style.transform = 'scale(1)';
+        };
+        downButton.onclick = moveCardDown;
+
+        container.appendChild(upButton);
+        container.appendChild(downButton);
+        document.body.appendChild(container);
+
+        console.log('✅ Floating controls appended to body!');
+        console.log('🔍 Check buttons in DOM:');
+        console.log('  - Up button:', document.getElementById('myUpButton'));
+        console.log('  - Down button:', document.getElementById('myDownButton'));
+
+        floatingControls = container;
+    }
+
+    // 節流版本的更新函數
+    const throttledUpdate = throttle(updateCurrentCard, 150);
+
+    // 初始化
+    function init() {
+        const panel = document.querySelector('div.chat-panel-content');
+        if (!panel) {
+            console.log("Panel not found yet...");
+            return;
+        }
+
+        console.log("✅ Chat panel found. Initializing floating controls...");
+        console.log("Panel element:", panel);
+
+        // 創建懸浮控制面板
+        createFloatingControls();
+
+        // 綁定滾動事件
+        panel.addEventListener('scroll', throttledUpdate);
+
+        // 綁定視窗大小改變事件
+        window.addEventListener('resize', debounce(updateCurrentCard, 300));
+
+        // 監聽 DOM 變化
+        const contentObserver = new MutationObserver(debounce(updateCurrentCard, 200));
+        contentObserver.observe(panel, { childList: true, subtree: true });
+
+        // 初始化當前卡片
+        updateCurrentCard();
+    }
+
+    // 等待頁面載入
+    console.log("🚀 Script started, waiting for chat-panel-content...");
+
+    const initObserver = new MutationObserver(() => {
         const panel = document.querySelector('div.chat-panel-content');
         if (panel) {
-            observer.disconnect();
-            console.log("Chat panel content found. Attaching listeners and initial scan.");
-            
-            // A. 綁定滾動事件
-            panel.addEventListener('scroll', debouncedScan);
-            
-            // B. 綁定內容變化事件
-            const contentObserver = new MutationObserver(debouncedScan);
-            contentObserver.observe(panel, { childList: true, subtree: true });
-
-            // C. 綁定視窗大小改變事件 (修復重點!)
-            window.addEventListener('resize', debouncedResizeScan);
-
-            // D. 執行首次掃描
-            scanAndAttachButtons();
+            console.log("🎯 Panel detected! Disconnecting observer and initializing...");
+            initObserver.disconnect();
+            init();
         }
     });
 
-    // 從 body 開始監聽，直到 chat-panel-content 出現
     initObserver.observe(document.body, { childList: true, subtree: true });
 
 })();
