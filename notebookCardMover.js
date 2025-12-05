@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         NotebookLM Chat Card Mover - Optimized
+// @name         NotebookLM Chat Card Mover - Fixed Resize Issue
 // @namespace    http://tampermonkey.net/
-// @version      v1.0.0
-// @description  Optimized version using Debounce for better performance.
+// @version      v1.1.0
+// @description
 // @author       You
 // @match        https://notebooklm.google.com/notebook/*
 // @grant        none
@@ -47,9 +47,13 @@
      * @param {HTMLElement} card - mat-card 元素
      */
     function insertMoveButtons(card) {
-        // 檢查是否已經插入過按鈕，這是關鍵，避免重複生成
-        if (card.classList.contains('has-move-buttons')) {
-            return;
+        const parent = card.parentNode;
+        if (!parent) return;
+
+        // 改進的檢查：不只檢查標記，還要確認按鈕容器真的存在
+        const existingButtons = parent.querySelector('.card-mover-buttons');
+        if (existingButtons) {
+            return; // 按鈕已存在，不需重複添加
         }
 
         const buttonContainer = document.createElement('div');
@@ -65,20 +69,17 @@
             transition: opacity 0.2s;
         `;
         
-        // 標記卡片已經處理過
-        card.classList.add('has-move-buttons'); 
-        
         // 確保 mat-card 的父元素是定位基準
-        card.parentNode.style.position = 'relative'; 
-        card.parentNode.addEventListener('mouseenter', () => buttonContainer.style.opacity = '1');
-        card.parentNode.addEventListener('mouseleave', () => buttonContainer.style.opacity = '0.2');
+        parent.style.position = 'relative'; 
+        parent.addEventListener('mouseenter', () => buttonContainer.style.opacity = '1');
+        parent.addEventListener('mouseleave', () => buttonContainer.style.opacity = '0.2');
 
         const upButton = document.createElement('button');
         upButton.textContent = '⬆️';
         upButton.title = '上移卡片';
         upButton.style.cssText = 'background: #fff; border: 1px solid #ccc; cursor: pointer; padding: 2px 5px; margin-bottom: 2px;';
         upButton.onclick = (e) => {
-            e.stopPropagation(); // 阻止事件冒泡到父層
+            e.stopPropagation();
             moveCardUp(card);
         };
         
@@ -87,13 +88,13 @@
         downButton.title = '下移卡片';
         downButton.style.cssText = 'background: #fff; border: 1px solid #ccc; cursor: pointer; padding: 2px 5px;';
         downButton.onclick = (e) => {
-            e.stopPropagation(); // 阻止事件冒泡到父層
+            e.stopPropagation();
             moveCardDown(card);
         };
 
         buttonContainer.appendChild(upButton);
         buttonContainer.appendChild(downButton);
-        card.parentNode.appendChild(buttonContainer);
+        parent.appendChild(buttonContainer);
     }
     
     // --- 核心掃描與綁定邏輯 ---
@@ -104,7 +105,6 @@
     function scanAndAttachButtons() {
         const panel = document.querySelector('div.chat-panel-content');
         if (!panel) {
-             // 如果 chat-panel-content 還沒載入，稍後再試 (通常由 MutationObserver 處理)
             return;
         }
         
@@ -116,14 +116,16 @@
             const card = container.querySelector('chat-message > div > mat-card');
             
             if (card) {
-                // 只有在卡片成功抓到時才生成按鈕
                 insertMoveButtons(card);
             }
         });
     }
 
-    // 將掃描函數去抖動化 (滾動事件專用，延遲 100ms)
+    // 將掃描函數去抖動化
     const debouncedScan = debounce(scanAndAttachButtons, 100);
+    
+    // 新增：處理視窗大小改變
+    const debouncedResizeScan = debounce(scanAndAttachButtons, 300);
 
     // --- 啟動監聽 ---
 
@@ -131,19 +133,20 @@
     const initObserver = new MutationObserver((mutationsList, observer) => {
         const panel = document.querySelector('div.chat-panel-content');
         if (panel) {
-            // A. chat-panel-content 已經載入，停止初始化監聽
             observer.disconnect();
-            console.log("Chat panel content found. Attaching scroll listener and initial scan.");
+            console.log("Chat panel content found. Attaching listeners and initial scan.");
             
-            // B. 綁定滾動事件：當 chat-panel-content 滾動時，執行去抖動掃描
+            // A. 綁定滾動事件
             panel.addEventListener('scroll', debouncedScan);
             
-            // C. 綁定內容變化事件：當新的訊息被插入時，執行去抖動掃描
-            // 這比監聽整個 appRoot 更有效率
+            // B. 綁定內容變化事件
             const contentObserver = new MutationObserver(debouncedScan);
             contentObserver.observe(panel, { childList: true, subtree: true });
 
-            // D. 執行首次掃描，為現有卡片添加按鈕
+            // C. 綁定視窗大小改變事件 (修復重點!)
+            window.addEventListener('resize', debouncedResizeScan);
+
+            // D. 執行首次掃描
             scanAndAttachButtons();
         }
     });
